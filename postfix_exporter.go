@@ -54,7 +54,7 @@ type PostfixExporter struct {
 	qmgrInsertsNrcpt                prometheus.Histogram
 	qmgrInsertsSize                 prometheus.Histogram
 	qmgrRemoves                     prometheus.Counter
-	qmgrSize                        prometheus.Counter
+	qmgrCount                        prometheus.Gauge
 	smtpDelays                      *prometheus.HistogramVec
 	smtpTLSConnects                 *prometheus.CounterVec
 	smtpdConnects                   prometheus.Counter
@@ -94,8 +94,8 @@ func (e *PostfixExporter) CollectTextualShowqFromReader(file io.Reader, ch chan<
 	// "A07A81514      5156 Tue Feb 14 13:13:54  MAILER-DAEMON"
 	messageLine := regexp.MustCompile("^[0-9A-F]+([\\*!]?) +(\\d+) (\\w{3} \\w{3} +\\d+ +\\d+:\\d{2}:\\d{2}) +")
 
-	// Increment queue size
-	e.qmgrSize.Inc()
+	// Reset queue count
+	e.qmgrCount.Set(0)
 
 	// Histograms tracking the messages by size and age.
 	sizeHistogram := prometheus.NewHistogramVec(
@@ -125,7 +125,11 @@ func (e *PostfixExporter) CollectTextualShowqFromReader(file io.Reader, ch chan<
 	location, _ := time.LoadLocation("Local")
 	for scanner.Scan() {
 		matches := messageLine.FindStringSubmatch(scanner.Text())
+
 		if matches != nil {
+			// Increment queue count
+			e.qmgrCount.Inc()
+
 			// Derive the name of the message queue.
 			queue := "other"
 			if matches[1] == "*" {
@@ -458,9 +462,9 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal) 
 			Name:      "qmgr_messages_removed_total",
 			Help:      "Total number of messages removed from mail queues.",
 		}),
-		qmgrSize: prometheus.NewCounter(prometheus.CounterOpts{
+		qmgrCount: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "postfix",
-			Name:      "qmgr_size",
+			Name:      "qmgr_count",
 			Help:      "Total number of messages in queue.",
 		}),
 		smtpDelays: prometheus.NewHistogramVec(
@@ -547,7 +551,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.qmgrInsertsNrcpt.Desc()
 	ch <- e.qmgrInsertsSize.Desc()
 	ch <- e.qmgrRemoves.Desc()
-	ch <- e.qmgrSize.Desc()
+	ch <- e.qmgrCount.Desc()
 	e.smtpDelays.Describe(ch)
 	e.smtpTLSConnects.Describe(ch)
 	ch <- e.smtpdConnects.Desc()
@@ -609,7 +613,7 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.qmgrInsertsNrcpt
 	ch <- e.qmgrInsertsSize
 	ch <- e.qmgrRemoves
-	ch <- e.qmgrSize
+	ch <- e.qmgrCount
 	e.smtpDelays.Collect(ch)
 	e.smtpTLSConnects.Collect(ch)
 	ch <- e.smtpdConnects
@@ -625,7 +629,7 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 
 func main() {
 	var (
-		listenAddress      = flag.String("web.listen-address", ":9154", "Address to listen on for web interface and telemetry.")
+		listenAddress      = flag.String("web.listen-address", ":9155", "Address to listen on for web interface and telemetry.")
 		metricsPath        = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 		postfixShowqPath   = flag.String("postfix.showq_path", "/var/spool/postfix/public/showq", "Path at which Postfix places its showq socket.")
 		postfixLogfilePath = flag.String("postfix.logfile_path", "/var/log/postfix_exporter_input.log", "Path where Postfix writes log entries. This file will be truncated by this exporter.")
