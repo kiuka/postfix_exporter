@@ -54,6 +54,7 @@ type PostfixExporter struct {
 	qmgrInsertsNrcpt                prometheus.Histogram
 	qmgrInsertsSize                 prometheus.Histogram
 	qmgrRemoves                     prometheus.Counter
+	qmgrSize                        prometheus.Counter
 	smtpDelays                      *prometheus.HistogramVec
 	smtpTLSConnects                 *prometheus.CounterVec
 	smtpdConnects                   prometheus.Counter
@@ -75,23 +76,26 @@ type PostfixExporter struct {
 // the 'mailq' command. Postfix 3.x uses a binary format, where entries
 // are terminated using null bytes. Auto-detect the format by scanning
 // for null bytes in the first 128 bytes of output.
-func CollectShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
+func (e *PostfixExporter) CollectShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
 	reader := bufio.NewReader(file)
 	buf, _ := reader.Peek(128)
 	if bytes.IndexByte(buf, 0) >= 0 {
-		return CollectBinaryShowqFromReader(reader, ch)
+		return e.CollectBinaryShowqFromReader(reader, ch)
 	}
-	return CollectTextualShowqFromReader(reader, ch)
+	return e.CollectTextualShowqFromReader(reader, ch)
 }
 
 // CollectTextualShowqFromReader parses Postfix's textual showq output.
-func CollectTextualShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
+func (e *PostfixExporter) CollectTextualShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Split(bufio.ScanLines)
 
 	// Regular expression for matching postqueue's output. Example:
 	// "A07A81514      5156 Tue Feb 14 13:13:54  MAILER-DAEMON"
 	messageLine := regexp.MustCompile("^[0-9A-F]+([\\*!]?) +(\\d+) (\\w{3} \\w{3} +\\d+ +\\d+:\\d{2}:\\d{2}) +")
+
+	// Increment queue size
+	e.qmgrSize.Inc()
 
 	// Histograms tracking the messages by size and age.
 	sizeHistogram := prometheus.NewHistogramVec(
@@ -176,7 +180,7 @@ func ScanNullTerminatedEntries(data []byte, atEOF bool) (advance int, token []by
 }
 
 // CollectBinaryShowqFromReader parses Postfix's binary showq format.
-func CollectBinaryShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
+func (e *PostfixExporter) CollectBinaryShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Split(ScanNullTerminatedEntries)
 
@@ -245,23 +249,23 @@ func CollectBinaryShowqFromReader(file io.Reader, ch chan<- prometheus.Metric) e
 }
 
 // CollectShowqFromFile collects Postfix queue statistics from a file.
-func CollectShowqFromFile(path string, ch chan<- prometheus.Metric) error {
+func (e *PostfixExporter) CollectShowqFromFile(path string, ch chan<- prometheus.Metric) error {
 	fd, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer fd.Close()
-	return CollectShowqFromReader(fd, ch)
+	return e.CollectShowqFromReader(fd, ch)
 }
 
 // CollectShowqFromSocket collects Postfix queue statistics from a socket.
-func CollectShowqFromSocket(path string, ch chan<- prometheus.Metric) error {
+func (e *PostfixExporter) CollectShowqFromSocket(path string, ch chan<- prometheus.Metric) error {
 	fd, err := net.Dial("unix", path)
 	if err != nil {
 		return err
 	}
 	defer fd.Close()
-	return CollectShowqFromReader(fd, ch)
+	return e.CollectShowqFromReader(fd, ch)
 }
 
 // Patterns for parsing log messages.
@@ -454,6 +458,11 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal) 
 			Name:      "qmgr_messages_removed_total",
 			Help:      "Total number of messages removed from mail queues.",
 		}),
+		qmgrSize: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "qmgr_size",
+			Help:      "Total number of messages in queue.",
+		}),
 		smtpDelays: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "postfix",
@@ -538,6 +547,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.qmgrInsertsNrcpt.Desc()
 	ch <- e.qmgrInsertsSize.Desc()
 	ch <- e.qmgrRemoves.Desc()
+	ch <- e.qmgrSize.Desc()
 	e.smtpDelays.Describe(ch)
 	e.smtpTLSConnects.Describe(ch)
 	ch <- e.smtpdConnects.Desc()
@@ -553,7 +563,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect metrics from Postfix's showq socket and its log file.
 func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
-	err := CollectShowqFromSocket(e.showqPath, ch)
+	err := e.CollectShowqFromSocket(e.showqPath, ch)
 	if err == nil {
 		ch <- prometheus.MustNewConstMetric(
 			postfixUpDesc,
@@ -599,6 +609,7 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.qmgrInsertsNrcpt
 	ch <- e.qmgrInsertsSize
 	ch <- e.qmgrRemoves
+	ch <- e.qmgrSize
 	e.smtpDelays.Collect(ch)
 	e.smtpTLSConnects.Collect(ch)
 	ch <- e.smtpdConnects
